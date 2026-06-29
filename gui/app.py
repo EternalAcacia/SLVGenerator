@@ -12,6 +12,7 @@ from PIL import Image
 
 from renderer.config import RenderConfig
 from renderer.core import assets_fingerprint, check_ffmpeg, render_preview_frame, render_video
+from renderer.ffmpeg_encode import ENCODER_AUTO_LABEL, encoder_combo_choices, resolve_video_encoder
 from renderer.fonts import FontInfo, pick_default_fonts, scan_system_fonts
 from renderer.lrc import parse_lrc_text
 from renderer.paths import app_root, build_output_path
@@ -152,9 +153,25 @@ class LyricsVideoApp(ctk.CTk):
         ctk.CTkLabel(res_frame, text="高").pack(side="left", padx=(8, 4))
         self.height_entry = ctk.CTkEntry(res_frame, textvariable=self.height_var, width=72, state="disabled")
         self.height_entry.pack(side="left")
-        ctk.CTkLabel(tab, text="LRC 歌词").grid(row=6, column=0, sticky="nw", padx=8, pady=8)
+        self._encoder_label_to_codec: dict[str, str] = {}
+        self.video_encoder_var = ctk.StringVar(value=ENCODER_AUTO_LABEL)
+        ctk.CTkLabel(tab, text="视频编码").grid(row=6, column=0, sticky="w", padx=8, pady=4)
+        enc_frame = ctk.CTkFrame(tab, fg_color="transparent")
+        enc_frame.grid(row=6, column=1, sticky="ew", padx=8, pady=4)
+        self.encoder_combo = ctk.CTkComboBox(
+            enc_frame,
+            values=[ENCODER_AUTO_LABEL],
+            variable=self.video_encoder_var,
+            command=self._on_encoder_choice,
+            width=220,
+        )
+        self.encoder_combo.pack(side="left")
+        self.encoder_hint = ctk.CTkLabel(enc_frame, text="", text_color="#888888")
+        self.encoder_hint.pack(side="left", padx=(12, 0))
+        self._refresh_encoder_choices()
+        ctk.CTkLabel(tab, text="LRC 歌词").grid(row=7, column=0, sticky="nw", padx=8, pady=8)
         lrc_btns = ctk.CTkFrame(tab, fg_color="transparent")
-        lrc_btns.grid(row=6, column=1, sticky="ew", padx=8, pady=8)
+        lrc_btns.grid(row=7, column=1, sticky="ew", padx=8, pady=8)
         ctk.CTkButton(lrc_btns, text="选择 LRC 文件", width=120, command=self._pick_lrc).pack(side="left")
         ctk.CTkLabel(
             lrc_btns,
@@ -162,9 +179,9 @@ class LyricsVideoApp(ctk.CTk):
             text_color="#aaaaaa",
         ).pack(side="left", padx=(10, 0))
         self.lrc_text = ctk.CTkTextbox(tab, height=180)
-        self.lrc_text.grid(row=7, column=0, columnspan=2, sticky="nsew", padx=8, pady=(0, 8))
+        self.lrc_text.grid(row=8, column=0, columnspan=2, sticky="nsew", padx=8, pady=(0, 8))
         tab.grid_columnconfigure(1, weight=1)
-        tab.grid_rowconfigure(7, weight=1)
+        tab.grid_rowconfigure(8, weight=1)
 
     def _build_tab_fonts(self) -> None:
         tab = self.tabs.tab("字体")
@@ -286,6 +303,30 @@ class LyricsVideoApp(ctk.CTk):
                 continue
         return path.read_text(encoding="utf-8", errors="replace")
 
+    def _refresh_encoder_choices(self) -> None:
+        choices = encoder_combo_choices()
+        self._encoder_label_to_codec = {label: codec for label, codec in choices}
+        labels = [label for label, _ in choices]
+        current = self.video_encoder_var.get()
+        self.encoder_combo.configure(values=labels)
+        if current not in labels:
+            self.video_encoder_var.set(ENCODER_AUTO_LABEL)
+        self._update_encoder_hint()
+
+    def _on_encoder_choice(self, _choice: str) -> None:
+        self._update_encoder_hint()
+
+    def _update_encoder_hint(self) -> None:
+        preference = self._encoder_label_to_codec.get(self.video_encoder_var.get(), "auto")
+        resolved = resolve_video_encoder(preference)
+        if preference == "auto":
+            self.encoder_hint.configure(text=f"将使用: {resolved.label}")
+        else:
+            self.encoder_hint.configure(text=f"已选择: {resolved.label}")
+
+    def _get_video_encoder_preference(self) -> str:
+        return self._encoder_label_to_codec.get(self.video_encoder_var.get(), "auto")
+
     def _update_output_path_label(self, *_args) -> None:
         path = build_output_path(PROJECT_ROOT, self.title_var.get(), self.artist_var.get())
         self.output_path_label.configure(text=str(path))
@@ -382,6 +423,7 @@ class LyricsVideoApp(ctk.CTk):
         return RenderConfig(
             width=width,
             height=height,
+            video_encoder=self._get_video_encoder_preference(),
             bg_image=Path(self.bg_path.get()),
             audio_file=Path(self.audio_path.get()),
             output_path=build_output_path(PROJECT_ROOT, title, artist),

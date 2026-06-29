@@ -14,6 +14,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 from renderer.config import RenderConfig
+from renderer.ffmpeg_encode import VideoEncoder, resolve_video_encoder, video_encode_ffmpeg_args
 from renderer.lrc import LyricBlock, blocks_fingerprint
 
 ProgressCallback = Callable[[float, float, str], None]
@@ -631,6 +632,73 @@ def render_preview_frame(
     return Image.fromarray(frame, mode="RGB")
 
 
+def _ffmpeg_error_tail(stderr: str) -> str:
+    lines = [line.strip() for line in stderr.splitlines() if line.strip()]
+    return "\n".join(lines[-8:])
+
+
+def _build_ffmpeg_encode_cmd(cfg: RenderConfig, encoder: VideoEncoder) -> list[str]:
+    return [
+        "ffmpeg", "-y", "-v", "error",
+        "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{cfg.width}x{cfg.height}", "-r", str(cfg.fps), "-i", "-",
+        "-i", str(cfg.audio_file),
+        "-map", "0:v:0", "-map", "1:a:0",
+        *video_encode_ffmpeg_args(encoder),
+        "-c:a", "aac", "-b:a", "320k", "-shortest", str(cfg.output_path),
+    ]
+
+
+def _write_video_frames(
+    cfg: RenderConfig,
+    blocks: list[LyricBlock],
+    assets: RenderAssets,
+    duration: float,
+    total_frames: int,
+    encoder: VideoEncoder,
+    started_at: float,
+    report: Callable[[float, float, str], None],
+    cancel_event=None,
+) -> None:
+    proc = subprocess.Popen(_build_ffmpeg_encode_cmd(cfg, encoder), stdin=subprocess.PIPE, stderr=subprocess.PIPE, text=False)
+    assert proc.stdin is not None
+    assert proc.stderr is not None
+    pipe_error: BrokenPipeError | None = None
+    try:
+        for i in range(total_frames):
+            if cancel_event is not None and cancel_event.is_set():
+                raise InterruptedError("渲染已取消")
+            t = i / cfg.fps
+            if cfg.spectrum_enabled and assets.spectrum is not None:
+                spec = assets.spectrum[min(i, len(assets.spectrum) - 1)]
+            else:
+                spec = np.zeros(cfg.spectrum_bars, dtype=np.float32)
+            scroll_idx = get_scroll_index(cfg, blocks, t, duration)
+            frame = render_frame(cfg, assets, scroll_idx, spec, t)
+            try:
+                proc.stdin.write(frame.tobytes())
+            except BrokenPipeError as exc:
+                pipe_error = exc
+                break
+            if i % (cfg.fps * 3) == 0:
+                elapsed = time.monotonic() - started_at
+                report(100.0 * i / total_frames, elapsed, f"渲染中 {t:.1f}s")
+    finally:
+        try:
+            proc.stdin.close()
+        except BrokenPipeError:
+            pipe_error = pipe_error or BrokenPipeError()
+        if cancel_event is not None and cancel_event.is_set():
+            proc.terminate()
+            raise InterruptedError("渲染已取消")
+
+    stderr = proc.stderr.read().decode("utf-8", errors="replace")
+    return_code = proc.wait()
+    if pipe_error is not None or return_code != 0:
+        detail = _ffmpeg_error_tail(stderr)
+        suffix = f"\n{detail}" if detail else ""
+        raise RuntimeError(f"ffmpeg 编码失败 ({encoder.label}){suffix}")
+
+
 def render_video(
     cfg: RenderConfig,
     blocks: list[LyricBlock],
@@ -654,37 +722,15 @@ def render_video(
     duration = get_duration(cfg.audio_file)
     total_frames = int(math.ceil(duration * cfg.fps))
     cfg.output_path.parent.mkdir(parents=True, exist_ok=True)
-    cmd = [
-        "ffmpeg", "-y",
-        "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{cfg.width}x{cfg.height}", "-r", str(cfg.fps), "-i", "-",
-        "-i", str(cfg.audio_file),
-        "-map", "0:v:0", "-map", "1:a:0",
-        "-c:v", "libx264", "-preset", "fast", "-crf", "18", "-pix_fmt", "yuv420p",
-        "-c:a", "aac", "-b:a", "320k", "-shortest", str(cfg.output_path),
-    ]
-    report(0.0, 0.0, f"渲染 {total_frames} 帧...")
-    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
-    assert proc.stdin is not None
+    encoder = resolve_video_encoder(cfg.video_encoder, strict=cfg.video_encoder != "auto")
+    report(0.0, 0.0, f"渲染 {total_frames} 帧... (编码器: {encoder.label})")
+    fallback_encoder = resolve_video_encoder("libx264", strict=True)
     try:
-        for i in range(total_frames):
-            if cancel_event is not None and cancel_event.is_set():
-                raise InterruptedError("渲染已取消")
-            t = i / cfg.fps
-            if cfg.spectrum_enabled and assets.spectrum is not None:
-                spec = assets.spectrum[min(i, len(assets.spectrum) - 1)]
-            else:
-                spec = np.zeros(cfg.spectrum_bars, dtype=np.float32)
-            scroll_idx = get_scroll_index(cfg, blocks, t, duration)
-            frame = render_frame(cfg, assets, scroll_idx, spec, t)
-            proc.stdin.write(frame.tobytes())
-            if i % (cfg.fps * 3) == 0:
-                elapsed = time.monotonic() - started_at
-                report(100.0 * i / total_frames, elapsed, f"渲染中 {t:.1f}s")
-    finally:
-        proc.stdin.close()
-        if cancel_event is not None and cancel_event.is_set():
-            proc.terminate()
-            raise InterruptedError("渲染已取消")
-        if proc.wait() != 0:
-            raise RuntimeError("ffmpeg 编码失败")
-    report(100.0, time.monotonic() - started_at, f"完成: {cfg.output_path}")
+        _write_video_frames(cfg, blocks, assets, duration, total_frames, encoder, started_at, report, cancel_event)
+    except RuntimeError:
+        if cfg.video_encoder != "auto" or encoder.codec == fallback_encoder.codec:
+            raise
+        report(0.0, time.monotonic() - started_at, f"{encoder.label} 失败，回退到 {fallback_encoder.label}...")
+        _write_video_frames(cfg, blocks, assets, duration, total_frames, fallback_encoder, started_at, report, cancel_event)
+        encoder = fallback_encoder
+    report(100.0, time.monotonic() - started_at, f"完成: {cfg.output_path} (编码器: {encoder.label})")

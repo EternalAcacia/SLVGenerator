@@ -13,6 +13,7 @@ class RenderConfig:
     width: int = 1920
     height: int = 1080
     fps: int = 30
+    video_encoder: str = "auto"  # auto | libx264 | h264_nvenc | h264_qsv | h264_amf
 
     # Media
     bg_image: Path = field(default_factory=lambda: Path("."))
