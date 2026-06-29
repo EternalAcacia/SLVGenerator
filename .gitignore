@@ -1,0 +1,47 @@
+﻿# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+.env
+
+# Generated media and local assets
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.aac
+*.mp3
+*.wav
+*.flac
+*.m4a
+*.jpg
+*.jpeg
+*.png
+*.webp
+*.lrc
+output.mp4
+Unhappy/
+
+# Local-only scripts and bundled fonts
+make_lyrics_video.py
+capture_ref.py
+fonts/
+
+# Build artifacts
+build/
+dist/
+*.spec.bak
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
