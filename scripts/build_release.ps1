@@ -13,7 +13,7 @@ if (-not (Test-Path $Exe)) {
     throw "Build failed: dist\SLVGenerator.exe not found"
 }
 
-$Version = if ($env:RELEASE_VERSION) { $env:RELEASE_VERSION } else { "v1.0.0" }
+$Version = if ($env:RELEASE_VERSION) { $env:RELEASE_VERSION } else { "v1.1.0" }
 $ZipName = "SLVGenerator-$Version-windows.zip"
 $ZipPath = Join-Path $Root "dist\$ZipName"
 

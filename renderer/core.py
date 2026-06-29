@@ -108,9 +108,13 @@ def make_cover_sprite(cfg: RenderConfig) -> np.ndarray:
     img = Image.open(cfg.bg_image).convert("RGB")
     size = cfg.cover_radius * 2
     scale = max(size / img.width, size / img.height)
-    img = img.resize((int(img.width * scale), int(img.height * scale)), Image.Resampling.LANCZOS)
-    left = (img.width - size) // 2
-    top = (img.height - size) // 2
+    scaled_w = int(img.width * scale)
+    scaled_h = int(img.height * scale)
+    img = img.resize((scaled_w, scaled_h), Image.Resampling.LANCZOS)
+    cx = int(scaled_w * min(max(cfg.disc_src_cx_ratio, 0.0), 1.0))
+    cy = int(scaled_h * min(max(cfg.disc_src_cy_ratio, 0.0), 1.0))
+    left = max(0, min(cx - size // 2, scaled_w - size))
+    top = max(0, min(cy - size // 2, scaled_h - size))
     img = img.crop((left, top, left + size, top + size))
     mask = Image.new("L", (size, size), 0)
     ImageDraw.Draw(mask).ellipse((0, 0, size - 1, size - 1), fill=255)
@@ -567,10 +571,12 @@ def render_frame(
 ) -> np.ndarray:
     frame = sample_bg_frame(cfg, assets.bg_large, t)
     disc_angle = (t * cfg.disc_rot_speed) % 360.0
-    cover = rotate_cover(cfg, assets.cover_base, disc_angle)
-    cx, cy = cfg.cover_center
-    blit_rgba(frame, cover, cx - cfg.cover_radius, cy - cfg.cover_radius)
-    draw_spectrum(cfg, frame, spectrum_row, disc_angle)
+    if cfg.disc_enabled:
+        cover = rotate_cover(cfg, assets.cover_base, disc_angle)
+        cx, cy = cfg.cover_center
+        blit_rgba(frame, cover, cx - cfg.cover_radius, cy - cfg.cover_radius)
+    if cfg.spectrum_enabled:
+        draw_spectrum(cfg, frame, spectrum_row, disc_angle)
     blit_rgba(frame, assets.title_layer, cfg.title_blit_x - cfg.title_pad_left, cfg.title_blit_y - cfg.title_pad_top)
     lyrics = render_lyrics_panel(cfg, assets.sprites, scroll_idx, assets.layout_steps)
     blit_rgba(frame, lyrics, cfg.lyrics_panel_x - cfg.lyrics_panel_pad_left, cfg.lyrics_panel_y - cfg.lyrics_panel_pad_v)
@@ -606,7 +612,7 @@ def prepare_render_assets(
     title_layer = draw_title_layer(cfg, fonts)
     sprites = build_line_sprites(cfg, blocks, fonts)
     layout_steps = build_layout_steps(cfg, sprites)
-    spectrum = load_audio_spectrum(cfg) if load_spectrum else None
+    spectrum = load_audio_spectrum(cfg) if load_spectrum and cfg.spectrum_enabled else None
     return RenderAssets(bg_large, cover_base, title_layer, sprites, layout_steps, spectrum, assets_fingerprint(cfg, blocks))
 
 
@@ -642,8 +648,9 @@ def render_video(
 
     started_at = time.monotonic()
     report(0.0, 0.0, "准备资源...")
-    assets = prepare_render_assets(cfg, blocks, load_spectrum=True)
-    assert assets.spectrum is not None
+    assets = prepare_render_assets(cfg, blocks, load_spectrum=cfg.spectrum_enabled)
+    if cfg.spectrum_enabled:
+        assert assets.spectrum is not None
     duration = get_duration(cfg.audio_file)
     total_frames = int(math.ceil(duration * cfg.fps))
     cfg.output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -663,7 +670,10 @@ def render_video(
             if cancel_event is not None and cancel_event.is_set():
                 raise InterruptedError("渲染已取消")
             t = i / cfg.fps
-            spec = assets.spectrum[min(i, len(assets.spectrum) - 1)]
+            if cfg.spectrum_enabled and assets.spectrum is not None:
+                spec = assets.spectrum[min(i, len(assets.spectrum) - 1)]
+            else:
+                spec = np.zeros(cfg.spectrum_bars, dtype=np.float32)
             scroll_idx = get_scroll_index(cfg, blocks, t, duration)
             frame = render_frame(cfg, assets, scroll_idx, spec, t)
             proc.stdin.write(frame.tobytes())

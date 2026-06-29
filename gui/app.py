@@ -14,12 +14,22 @@ from renderer.config import RenderConfig
 from renderer.core import assets_fingerprint, check_ffmpeg, render_preview_frame, render_video
 from renderer.fonts import FontInfo, pick_default_fonts, scan_system_fonts
 from renderer.lrc import parse_lrc_text
-from renderer.paths import app_root
+from renderer.paths import app_root, build_output_path
 
 from gui.widgets import ScrollableComboBox
 
 PROJECT_ROOT = app_root()
 PREVIEW_WIDTH = 520
+
+RESOLUTION_PRESETS: dict[str, tuple[int, int] | None] = {
+    "1920×1080 (1080p)": (1920, 1080),
+    "1280×720 (720p)": (1280, 720),
+    "3840×2160 (4K)": (3840, 2160),
+    "2560×1440 (2K)": (2560, 1440),
+    "1080×1920 (竖屏 1080p)": (1080, 1920),
+    "720×1280 (竖屏 720p)": (720, 1280),
+    "自定义": None,
+}
 
 
 class LyricsVideoApp(ctk.CTk):
@@ -102,19 +112,49 @@ class LyricsVideoApp(ctk.CTk):
         tab = self.tabs.tab("素材")
         self.bg_path = ctk.StringVar()
         self.audio_path = ctk.StringVar()
-        self.output_path = ctk.StringVar(value=str(PROJECT_ROOT / "output.mp4"))
         self.title_var = ctk.StringVar(value="")
         self.artist_var = ctk.StringVar(value="")
+        self.resolution_preset = ctk.StringVar(value="1920×1080 (1080p)")
+        self.width_var = ctk.StringVar(value="1920")
+        self.height_var = ctk.StringVar(value="1080")
         self._row_file(tab, 0, "背景图片", self.bg_path, [("图片", "*.jpg *.jpeg *.png *.webp")])
         self._row_file(tab, 1, "音频文件", self.audio_path, [("音频", "*.mp3 *.aac *.wav *.flac *.m4a")])
-        self._row_file(tab, 2, "输出 MP4", self.output_path, [("视频", "*.mp4")], save=True)
-        ctk.CTkLabel(tab, text="歌名").grid(row=3, column=0, sticky="w", padx=8, pady=(8, 0))
-        ctk.CTkEntry(tab, textvariable=self.title_var).grid(row=3, column=1, sticky="ew", padx=8, pady=(8, 0))
-        ctk.CTkLabel(tab, text="歌手").grid(row=4, column=0, sticky="w", padx=8, pady=4)
-        ctk.CTkEntry(tab, textvariable=self.artist_var).grid(row=4, column=1, sticky="ew", padx=8, pady=4)
-        ctk.CTkLabel(tab, text="LRC 歌词").grid(row=5, column=0, sticky="nw", padx=8, pady=8)
+        ctk.CTkLabel(tab, text="歌名").grid(row=2, column=0, sticky="w", padx=8, pady=(8, 0))
+        ctk.CTkEntry(tab, textvariable=self.title_var).grid(row=2, column=1, sticky="ew", padx=8, pady=(8, 0))
+        ctk.CTkLabel(tab, text="歌手").grid(row=3, column=0, sticky="w", padx=8, pady=4)
+        ctk.CTkEntry(tab, textvariable=self.artist_var).grid(row=3, column=1, sticky="ew", padx=8, pady=4)
+        ctk.CTkLabel(tab, text="输出路径").grid(row=4, column=0, sticky="w", padx=8, pady=4)
+        self.output_path_label = ctk.CTkLabel(
+            tab,
+            text=str(build_output_path(PROJECT_ROOT, "", "")),
+            anchor="w",
+            justify="left",
+            wraplength=520,
+            text_color="#aaaaaa",
+        )
+        self.output_path_label.grid(row=4, column=1, sticky="ew", padx=8, pady=4)
+        self.title_var.trace_add("write", self._update_output_path_label)
+        self.artist_var.trace_add("write", self._update_output_path_label)
+        ctk.CTkLabel(tab, text="分辨率").grid(row=5, column=0, sticky="w", padx=8, pady=4)
+        res_frame = ctk.CTkFrame(tab, fg_color="transparent")
+        res_frame.grid(row=5, column=1, sticky="ew", padx=8, pady=4)
+        self.resolution_combo = ctk.CTkComboBox(
+            res_frame,
+            values=list(RESOLUTION_PRESETS.keys()),
+            variable=self.resolution_preset,
+            command=self._on_resolution_preset,
+            width=220,
+        )
+        self.resolution_combo.pack(side="left")
+        ctk.CTkLabel(res_frame, text="宽").pack(side="left", padx=(12, 4))
+        self.width_entry = ctk.CTkEntry(res_frame, textvariable=self.width_var, width=72, state="disabled")
+        self.width_entry.pack(side="left")
+        ctk.CTkLabel(res_frame, text="高").pack(side="left", padx=(8, 4))
+        self.height_entry = ctk.CTkEntry(res_frame, textvariable=self.height_var, width=72, state="disabled")
+        self.height_entry.pack(side="left")
+        ctk.CTkLabel(tab, text="LRC 歌词").grid(row=6, column=0, sticky="nw", padx=8, pady=8)
         lrc_btns = ctk.CTkFrame(tab, fg_color="transparent")
-        lrc_btns.grid(row=5, column=1, sticky="ew", padx=8, pady=8)
+        lrc_btns.grid(row=6, column=1, sticky="ew", padx=8, pady=8)
         ctk.CTkButton(lrc_btns, text="选择 LRC 文件", width=120, command=self._pick_lrc).pack(side="left")
         ctk.CTkLabel(
             lrc_btns,
@@ -122,9 +162,9 @@ class LyricsVideoApp(ctk.CTk):
             text_color="#aaaaaa",
         ).pack(side="left", padx=(10, 0))
         self.lrc_text = ctk.CTkTextbox(tab, height=180)
-        self.lrc_text.grid(row=6, column=0, columnspan=2, sticky="nsew", padx=8, pady=(0, 8))
+        self.lrc_text.grid(row=7, column=0, columnspan=2, sticky="nsew", padx=8, pady=(0, 8))
         tab.grid_columnconfigure(1, weight=1)
-        tab.grid_rowconfigure(6, weight=1)
+        tab.grid_rowconfigure(7, weight=1)
 
     def _build_tab_fonts(self) -> None:
         tab = self.tabs.tab("字体")
@@ -170,13 +210,19 @@ class LyricsVideoApp(ctk.CTk):
 
     def _build_tab_disc(self) -> None:
         tab = self.tabs.tab("唱片与背景")
-        self.cover_x = self._slider(tab, 0, "唱片中心 X", 150, 600, 328, step=1)
-        self.cover_y = self._slider(tab, 1, "唱片中心 Y", 200, 880, 540, step=1)
-        self.cover_radius = self._slider(tab, 2, "唱片半径", 80, 220, 178, step=1)
+        self.disc_enabled = tk.BooleanVar(value=True)
+        self.spectrum_enabled = tk.BooleanVar(value=True)
+        ctk.CTkSwitch(tab, text="显示唱片", variable=self.disc_enabled).grid(row=0, column=0, columnspan=2, padx=8, pady=(8, 4), sticky="w")
+        ctk.CTkSwitch(tab, text="显示音频频谱", variable=self.spectrum_enabled).grid(row=1, column=0, columnspan=2, padx=8, pady=4, sticky="w")
+        self.disc_src_x = self._slider(tab, 2, "唱片图源 X", 0, 100, 50, step=1)
+        self.disc_src_y = self._slider(tab, 3, "唱片图源 Y", 0, 100, 50, step=1)
+        self.cover_x = self._slider(tab, 4, "唱片中心 X", 150, 600, 328, step=1)
+        self.cover_y = self._slider(tab, 5, "唱片中心 Y", 200, 880, 540, step=1)
+        self.cover_radius = self._slider(tab, 6, "唱片半径", 80, 220, 178, step=1)
         self.wiggle_enabled = tk.BooleanVar(value=True)
-        ctk.CTkSwitch(tab, text="背景 Wiggle", variable=self.wiggle_enabled).grid(row=3, column=0, columnspan=2, padx=8, pady=12, sticky="w")
-        self.wiggle_freq = self._slider(tab, 4, "Wiggle 频率", 0.2, 3.0, 1.2, step=0.1)
-        self.wiggle_amp = self._slider(tab, 5, "Wiggle 幅度", 0.0, 20.0, 5.0, step=0.5)
+        ctk.CTkSwitch(tab, text="背景 Wiggle", variable=self.wiggle_enabled).grid(row=7, column=0, columnspan=2, padx=8, pady=12, sticky="w")
+        self.wiggle_freq = self._slider(tab, 8, "Wiggle 频率", 0.2, 3.0, 1.2, step=0.1)
+        self.wiggle_amp = self._slider(tab, 9, "Wiggle 幅度", 0.0, 20.0, 5.0, step=0.5)
 
     def _slider(self, parent, row, label, vmin, vmax, default, step=1):
         frame = ctk.CTkFrame(parent, fg_color="transparent")
@@ -240,6 +286,34 @@ class LyricsVideoApp(ctk.CTk):
                 continue
         return path.read_text(encoding="utf-8", errors="replace")
 
+    def _update_output_path_label(self, *_args) -> None:
+        path = build_output_path(PROJECT_ROOT, self.title_var.get(), self.artist_var.get())
+        self.output_path_label.configure(text=str(path))
+
+    def _on_resolution_preset(self, choice: str) -> None:
+        preset = RESOLUTION_PRESETS.get(choice)
+        if preset:
+            w, h = preset
+            self.width_var.set(str(w))
+            self.height_var.set(str(h))
+            self.width_entry.configure(state="disabled")
+            self.height_entry.configure(state="disabled")
+        else:
+            self.width_entry.configure(state="normal")
+            self.height_entry.configure(state="normal")
+
+    def _parse_resolution(self) -> tuple[int, int]:
+        try:
+            width = int(self.width_var.get().strip())
+            height = int(self.height_var.get().strip())
+        except ValueError as exc:
+            raise ValueError("分辨率宽高必须是整数") from exc
+        if width < 320 or height < 240:
+            raise ValueError("分辨率过小，请至少使用 320×240")
+        if width > 7680 or height > 4320:
+            raise ValueError("分辨率过大，请不超过 7680×4320")
+        return width, height
+
     def _load_fonts(self) -> None:
         self._fonts = scan_system_fonts(PROJECT_ROOT)
         self._font_map = {f.display_name: f for f in self._fonts}
@@ -298,12 +372,21 @@ class LyricsVideoApp(ctk.CTk):
         fa = self._font_map.get(self.font_artist_var.get())
         if not fe or not fb or not fc or not ft or not fa:
             raise ValueError("请选择主歌词、主歌词高亮、副歌词、歌名、歌手字体")
+        width, height = self._parse_resolution()
+        title = self.title_var.get().strip()
+        artist = self.artist_var.get().strip()
+        if not title:
+            raise ValueError("请填写歌名")
+        if not artist:
+            raise ValueError("请填写歌手")
         return RenderConfig(
+            width=width,
+            height=height,
             bg_image=Path(self.bg_path.get()),
             audio_file=Path(self.audio_path.get()),
-            output_path=Path(self.output_path.get()),
-            title=self.title_var.get().strip(),
-            artist=self.artist_var.get().strip(),
+            output_path=build_output_path(PROJECT_ROOT, title, artist),
+            title=title,
+            artist=artist,
             font_en=fe.path,
             font_en_bold=fb.path,
             font_cn=fc.path,
@@ -332,6 +415,10 @@ class LyricsVideoApp(ctk.CTk):
             cover_center_x=int(self._slider_value(self.cover_x)),
             cover_center_y=int(self._slider_value(self.cover_y)),
             cover_radius=int(self._slider_value(self.cover_radius)),
+            disc_enabled=bool(self.disc_enabled.get()),
+            spectrum_enabled=bool(self.spectrum_enabled.get()),
+            disc_src_cx_ratio=float(self._slider_value(self.disc_src_x)) / 100.0,
+            disc_src_cy_ratio=float(self._slider_value(self.disc_src_y)) / 100.0,
             wiggle_enabled=bool(self.wiggle_enabled.get()),
             wiggle_freq=float(self._slider_value(self.wiggle_freq)),
             wiggle_amp=float(self._slider_value(self.wiggle_amp)),
@@ -427,8 +514,9 @@ class LyricsVideoApp(ctk.CTk):
             if err != "已取消":
                 messagebox.showerror("渲染失败", err)
         else:
+            cfg = self._build_config()
             self._log("渲染完成")
-            messagebox.showinfo("完成", f"视频已保存到:\n{self.output_path.get()}")
+            messagebox.showinfo("完成", f"视频已保存到:\n{cfg.output_path}")
 
     def _on_cancel(self) -> None:
         self._cancel_render.set()

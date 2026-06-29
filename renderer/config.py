@@ -73,6 +73,10 @@ class RenderConfig:
     scroll_ease_power: float = 4.0
 
     # Disc
+    disc_enabled: bool = True
+    spectrum_enabled: bool = True
+    disc_src_cx_ratio: float = 0.5
+    disc_src_cy_ratio: float = 0.5
     cover_center_x: int = 328
     cover_center_y: int = 540
     cover_radius: int = 178
@@ -173,6 +177,12 @@ class RenderConfig:
             str(self.cover_center_x),
             str(self.cover_center_y),
             str(self.cover_radius),
+            str(self.disc_enabled),
+            str(self.spectrum_enabled),
+            str(self.disc_src_cx_ratio),
+            str(self.disc_src_cy_ratio),
+            str(self.width),
+            str(self.height),
             str(self.wiggle_enabled),
             str(self.wiggle_freq),
             str(self.wiggle_amp),
